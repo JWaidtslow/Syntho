@@ -14,7 +14,29 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release --target NeonRuin_VST3 NeonRuin_Standalone
+
+      # GitHub artifacts do not keep file permissions, which breaks macOS bundles
+      # (the binary inside is no longer executable). So the bundles are signed
+      # (ad-hoc) and zipped with ditto, which keeps permissions, before upload.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          cd build/NeonRuin_artefacts/Release
+          codesign --force --deep --sign - "VST3/Neon Ruin.vst3"
+          codesign --force --deep --sign - "Standalone/Neon Ruin.app"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          ditto -c -k --sequesterRsrc --keepParent "VST3/Neon Ruin.vst3" "$GITHUB_WORKSPACE/dist/Neon Ruin VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "Standalone/Neon Ruin.app" "$GITHUB_WORKSPACE/dist/Neon Ruin Standalone.zip"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "build/NeonRuin_artefacts/Release/VST3/Neon Ruin.vst3" -DestinationPath "dist/Neon Ruin VST3.zip"
+          Compress-Archive -Path "build/NeonRuin_artefacts/Release/Standalone/*" -DestinationPath "dist/Neon Ruin Standalone.zip"
+
       - uses: actions/upload-artifact@v4
         with:
           name: NeonRuin-${{ matrix.os }}
-          path: build/NeonRuin_artefacts/Release/
+          path: dist/
