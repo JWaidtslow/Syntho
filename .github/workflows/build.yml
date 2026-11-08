@@ -1,0 +1,20 @@
+name: Build plugin
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get JUCE
+        run: git clone --depth 1 --branch 8.0.9 https://github.com/juce-framework/JUCE.git JUCE
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --target NeonRuin_VST3 NeonRuin_Standalone
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeonRuin-${{ matrix.os }}
+          path: build/NeonRuin_artefacts/Release/
