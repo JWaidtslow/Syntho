@@ -7,6 +7,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include "../Source/DSP/PitchCorrector.h"
 #include "LegacyPitchCorrector.h"
+#include "../Source/DSP/Analyzer.h"
 #include <chrono>
 #include <functional>
 
@@ -46,8 +47,143 @@ static void writeWav (const juce::File& f, const juce::AudioBuffer<float>& b)
         w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
 }
 
+// ---- compact synthetic singer used by the detection tests
+static void synthNote (std::vector<float>& out, double midi, double dur, int vowel, juce::Random& rng, bool consonant)
+{
+    Resonator res[4];
+    for (int k = 0; k < 4; ++k) res[k].set (formants[vowel][k], bws[k]);
+    std::vector<double> ph (200, 0.0);
+    const int len = (int) (dur * SR);
+    double hp = 0, prevW = 0;
+    for (int i = 0; i < len; ++i)
+    {
+        const double t = i / SR;
+        const double vib = 0.25 * std::sin (2 * juce::MathConstants<double>::pi * 5.5 * t) * juce::jlimit (0.0, 1.0, (t - 0.25) / 0.2);
+        const double f0 = 440.0 * std::pow (2.0, (midi + vib - 69.0) / 12.0);
+        double src = 0.0;
+        const int nh = juce::jmin (199, (int) (SR * 0.45 / f0));
+        for (int h = 1; h <= nh; ++h) { ph[(size_t) h] += 2 * juce::MathConstants<double>::pi * f0 * h / SR; src += std::sin (ph[(size_t) h]) / h; }
+        double y = src;
+        for (auto& r : res) y = r.process (y);
+        const double env = juce::jlimit (0.0, 1.0, t / 0.02) * juce::jlimit (0.0, 1.0, (dur - t) / 0.04);
+        double cons = 0.0;
+        if (consonant && t < 0.03) { const double w = rng.nextDouble() * 2 - 1; hp = 0.9 * (hp + w - prevW); prevW = w; cons = 2.0 * hp * (1.0 - t / 0.03); }
+        out.push_back ((float) (y * env * 0.05 + cons * 0.05));
+    }
+}
+
+static void runDetectionTests (const juce::String& realFile)
+{
+    const char* keyNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    const char* scaleNames[] = { "Chromatic", "Major", "Minor", "Maj Penta", "Min Penta", "Blues" };
+    static const int masks[6][12] = { {1,1,1,1,1,1,1,1,1,1,1,1}, {1,0,1,0,1,1,0,1,0,1,0,1}, {1,0,1,1,0,1,0,1,1,0,1,0},
+                                      {1,0,1,0,1,0,0,1,0,1,0,0}, {1,0,0,1,0,1,0,1,0,0,1,0}, {1,0,0,1,0,1,1,1,0,0,1,0} };
+    juce::Random rng (5);
+
+    // ---------- key / scale
+    struct KeyCase { int key, scale; };
+    const std::vector<KeyCase> cases { { 0, 1 }, { 2, 1 }, { 10, 1 }, { 6, 2 }, { 9, 2 }, { 4, 4 }, { 7, 3 }, { 9, 5 } };
+    int correct = 0, relative = 0;
+    for (auto kc : cases)
+    {
+        std::vector<int> notes;
+        for (int d = 0; d < 12; ++d) if (masks[kc.scale][d]) notes.push_back (d);
+        std::vector<float> sig;
+        for (int n = 0; n < 45; ++n)
+        {
+            // melodies lean on the tonic and fifth, like real tunes
+            int deg = notes[(size_t) rng.nextInt ((int) notes.size())];
+            const float r = rng.nextFloat();
+            if (r < 0.22f) deg = 0; else if (r < 0.34f) deg = 7;
+            const int midi = 48 + ((kc.key + deg) % 12) + (((kc.key + deg) % 12) < 4 ? 12 : 0);   // E3..D#4 range
+            synthNote (sig, midi + (rng.nextDouble() - 0.5) * 0.4, 0.25 + rng.nextDouble() * 0.45, rng.nextInt (5), rng, false);
+            for (int g = 0; g < (int) (0.08 * SR); ++g) sig.push_back (0.0f);
+        }
+        { float pk = 0; for (auto v : sig) pk = std::max (pk, std::abs (v)); for (auto& v : sig) v *= 0.5f / pk; }
+        PitchCorrector pc; pc.prepare (SR, 1);
+        juce::AudioBuffer<float> b (1, (int) sig.size());
+        for (int i = 0; i < (int) sig.size(); ++i) b.setSample (0, i, sig[(size_t) i]);
+        for (int pos = 0; pos < b.getNumSamples(); pos += 512)
+        { juce::AudioBuffer<float> blk (b.getArrayOfWritePointers(), 1, pos, std::min (512, b.getNumSamples() - pos)); pc.process (blk, false); }
+        const auto res = pc.keyDetector.analyse();
+        const bool ok = res.key == kc.key && res.scale == kc.scale;
+        const bool rel = ! ok && (res.key == kc.key || std::abs (((res.key - kc.key) % 12 + 12) % 12) == 9 || std::abs (((res.key - kc.key) % 12 + 12) % 12) == 3);
+        correct += ok; relative += rel;
+        std::printf ("key test  sung %-2s %-9s -> detected %-2s %-9s (alt %-2s %-9s) conf %3.0f%%  %s\n",
+                     keyNames[kc.key], scaleNames[kc.scale], keyNames[res.key], scaleNames[res.scale],
+                     keyNames[res.altKey], scaleNames[res.altScale], res.confidence * 100, ok ? "OK" : (rel ? "(related key)" : "WRONG"));
+    }
+    std::printf ("key/scale: %d/%d exact, %d related (same notes or same root)\n\n", correct, (int) cases.size(), relative);
+
+    // ---------- BPM: 5 tempi x 4 different random rhythms
+    int bOk = 0, bOct = 0, bWrong = 0;
+    for (double bpm : { 75.0, 92.0, 110.0, 128.0, 145.0 })
+    {
+        std::printf ("bpm test %5.1f ->", bpm);
+        for (int seed = 0; seed < 4; ++seed)
+        {
+            juce::Random rr (100 + seed * 17 + (int) bpm);
+            std::vector<float> sig;
+            const double eighth = 30.0 / bpm;
+            double t = 0;
+            while (t < 20.0)
+            {
+                const int slot = (int) std::round (t / eighth);
+                const bool down = slot % 2 == 0;
+                if (down || rr.nextFloat() < 0.45f)
+                {
+                    const double dur = eighth * (rr.nextFloat() < 0.5f ? 0.9 : 1.7);
+                    const size_t start = (size_t) (t * SR);
+                    if (sig.size() < start) sig.resize (start, 0.0f);
+                    sig.resize (start);
+                    synthNote (sig, 55 + rr.nextInt (9), dur * 0.85, rr.nextInt (5), rr, rr.nextFloat() < 0.6f);
+                }
+                t += eighth;
+            }
+            { float pk = 0; for (auto v : sig) pk = std::max (pk, std::abs (v)); for (auto& v : sig) v *= 0.5f / pk; }
+            analysis::BpmDetector det; det.prepare (SR);
+            det.process (sig.data(), (int) sig.size());
+            const float got = det.bpm.load(), ratio = got / (float) bpm;
+            const bool ok = std::abs (ratio - 1.0f) < 0.02f;
+            const bool oct = ! ok && (std::abs (ratio - 2.0f) < 0.04f || std::abs (ratio - 0.5f) < 0.01f);
+            bOk += ok; bOct += oct; bWrong += ! ok && ! oct;
+            std::printf ("  %6.1f%s", got, ok ? "  " : (oct ? "x2" : " ?"));
+        }
+        std::printf ("\n");
+    }
+    std::printf ("bpm: %d/20 exact, %d octave (half/double), %d wrong\n", bOk, bOct, bWrong);
+
+    // ---------- real recording
+    if (realFile.isNotEmpty())
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (realFile)));
+        juce::AudioBuffer<float> real (1, (int) rd->lengthInSamples);
+        rd->read (&real, 0, (int) rd->lengthInSamples, 0, true, false);
+        PitchCorrector pc; pc.prepare (rd->sampleRate, 1);
+        analysis::BpmDetector det; det.prepare (rd->sampleRate);
+        for (int pos = 0; pos < real.getNumSamples(); pos += 512)
+        {
+            const int len = std::min (512, real.getNumSamples() - pos);
+            det.process (real.getReadPointer (0, pos), len);
+            juce::AudioBuffer<float> blk (real.getArrayOfWritePointers(), 1, pos, len); pc.process (blk, false);
+        }
+        const auto res = pc.keyDetector.analyse();
+        std::printf ("\nREAL recording: key %s %s (alt %s %s), confidence %.0f%%, %.1f s of singing analysed; BPM %.1f (conf %.0f%%)\n",
+                     res.key >= 0 ? keyNames[res.key] : "?", scaleNames[res.scale], res.altKey >= 0 ? keyNames[res.altKey] : "?", scaleNames[res.altScale],
+                     res.confidence * 100, res.seconds, det.bpm.load(), det.confidence.load() * 100);
+        std::printf ("histogram:"); for (int i = 0; i < 12; ++i) std::printf (" %s=%.1f", keyNames[i], pc.keyDetector.histogram()[(size_t) i]); std::printf ("\n");
+    }
+}
+
 int main (int argc, char** argv)
 {
+    if (juce::SystemStats::getEnvironmentVariable ("NR_DETECT", "").isNotEmpty())
+    {
+        runDetectionTests (juce::SystemStats::getEnvironmentVariable ("NR_DETECT_REAL", ""));
+        return 0;
+    }
+
     const juce::File dir (argc > 1 ? juce::String (argv[1]) : juce::File::getCurrentWorkingDirectory().getFullPathName());
     dir.createDirectory();
 

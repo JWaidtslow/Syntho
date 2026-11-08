@@ -9,7 +9,7 @@ vocal chords, destruction, space, glitch and modulation — in a neon-noir ruine
 
 | Page | Modules |
 |---|---|
-| **VOICE** | Autotune (with live pitch graph), Harmony (3 voices + sub/octave layers), Gate |
+| **VOICE** | Autotune (with live pitch graph), Harmony (3 voices + sub/octave layers), Detect (key, scale, BPM), Gate |
 | **FX** | EQ, Compressor, De-esser, Transmission (drive/crush/radio/ring mod), Doubler |
 | **SPACE** | Delay (sync, ping-pong, reverse), Reverb (freeze), Chorus, Glitch |
 | **MOD** | 2 LFOs (any target, tempo sync), Chaos macro, drag-and-drop signal chain |
@@ -27,6 +27,12 @@ Signal chain: `IN → GATE → AUTOTUNE + HARMONY → [EQ, DE-ESS, COMP, TRANSMI
 - **Harmony** — up to 3 voices: scale-aware intervals (3rd, 4th, 5th, 6th, octave) or **MIDI**
   (each voice sings one of the notes you hold → play chords, the voice sings them). Plus sub-octave
   and octave-up layers, width, detune and formant for the extra voices.
+- **Detect** — listens to the vocal and detects the **key**, the **scale** (major, minor, major/minor
+  pentatonic, blues) and the **tempo (BPM)**. **APPLY** copies key + scale into the autotune, **AUTO** keeps
+  following the detected key once it is confident (≥ 60 %, ≥ 8 s of singing). **Tempo** chooses whether synced
+  delay/glitch/LFOs follow the DAW or the detected tempo (with ×½ / ×2 to fix half/double-tempo readings).
+  Tested: key/scale 8/8 correct on synthetic melodies; tempo 17/20 exact (2 half/double, 1 wrong) — tempo from
+  a vocal alone is inherently ambiguous, so the DAW tempo stays the default.
 - **Transmission** — saturation, bit-crusher/sample-rate reducer, radio/telephone band-limit, ring modulator.
 - **Glitch** — tempo-synced beat repeat with random reverse.
 - **LFOs** — Sine, Triangle, Saw, Square, S&H, Drift; 23 targets (incl. Transpose for stepped melodies, Volume for tremolo).

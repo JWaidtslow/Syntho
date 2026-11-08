@@ -26,6 +26,7 @@ NeonRuinAudioProcessor::NeonRuinAudioProcessor()
 
     apvts.state.setProperty ("chain", params::defaultChain(), nullptr);
     readChainFromState();
+    startTimerHz (2);
 }
 
 bool NeonRuinAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -61,6 +62,7 @@ void NeonRuinAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     reverb.reset();
     glitch.prepare (sampleRate, numCh);
     limiter.prepare (sampleRate);
+    bpmDetector.prepare (sampleRate);
 }
 
 // ============================================================================
@@ -243,13 +245,41 @@ void NeonRuinAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
             if (auto q = pos->getPpqPosition()) tempo.ppq = *q;
             tempo.playing = pos->getIsPlaying();
         }
-    bpm.store ((float) tempo.bpm);
-
-    updateModulation (tempo, numSamples);
 
     // ---- IN
     buffer.applyGain (juce::Decibels::decibelsToGain (p ("inGain")));
     inLevelDb.store (blockPeakDb (buffer));
+
+    // ---- tempo detection on the incoming vocal
+    if (resetBpmRequest.exchange (false)) bpmDetector.reset();
+    for (int pos = 0; pos < numSamples; pos += (int) monoScratch.size())
+    {
+        const int n = juce::jmin ((int) monoScratch.size(), numSamples - pos);
+        const int nCh = buffer.getNumChannels();
+        for (int i = 0; i < n; ++i)
+        {
+            float m = 0.0f;
+            for (int c = 0; c < nCh; ++c) m += buffer.getSample (c, pos + i);
+            monoScratch[(size_t) i] = m / (float) juce::jmax (1, nCh);
+        }
+        bpmDetector.process (monoScratch.data(), n);
+    }
+    detBpm.store (bpmDetector.bpm.load());
+    detBpmConfidence.store (bpmDetector.confidence.load());
+
+    // detected tempo replaces the host tempo when chosen (free-running, not bar-locked)
+    const int tempoSource = (int) p ("tempoSource");
+    const float det = bpmDetector.bpm.load();
+    usingDetectedTempo.store (tempoSource > 0 && det > 0.0f);
+    if (tempoSource > 0 && det > 0.0f)
+    {
+        static const double factor[] = { 1.0, 1.0, 0.5, 2.0 };
+        tempo.bpm = juce::jlimit (20.0, 400.0, det * factor[tempoSource]);
+        tempo.playing = false;
+    }
+    bpm.store ((float) tempo.bpm);
+
+    updateModulation (tempo, numSamples);
 
     // ---- GATE
     if (on ("gateOn")) gate.process (buffer, p ("gateThresh"), p ("gateRelease"));
@@ -274,7 +304,17 @@ void NeonRuinAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     ts.subLevel = pm ("harmSub") * 0.01f;
     ts.upLevel = pm ("harmUp") * 0.01f;
     tuner.setSettings (ts);
+    if (resetKeyRequest.exchange (false)) tuner.keyDetector.reset();
     tuner.process (buffer, on ("tuneOn"), on ("harmOn"));
+
+    // key / scale read-out (cheap; refreshed a few times per second)
+    if (++keyAnalysisCounter * numSamples >= (int) (sr * 0.25))
+    {
+        keyAnalysisCounter = 0;
+        const auto k = tuner.keyDetector.analyse();
+        detKey.store (k.key); detScale.store (k.scale); detAltKey.store (k.altKey); detAltScale.store (k.altScale);
+        detKeyConfidence.store (k.confidence); detKeySeconds.store (k.seconds);
+    }
 
     // ---- FX chain in the user's order
     for (auto& m : chain)
@@ -285,6 +325,25 @@ void NeonRuinAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     limiter.process (buffer);
     limiterDb.store (limiter.reductionDb);
     outLevelDb.store (blockPeakDb (buffer));
+}
+
+// ============================================================================
+//  Key detection -> autotune
+// ============================================================================
+void NeonRuinAudioProcessor::applyDetectedKey()
+{
+    const int k = detKey.load();
+    if (k < 0) return;
+    applyValues ({ { "tuneKey", (float) k }, { "tuneScale", (float) detScale.load() } });
+}
+
+void NeonRuinAudioProcessor::timerCallback()
+{
+    // Auto Key: follow the detected key once it is reasonably certain
+    if (! on ("keyAuto")) return;
+    if (detKey.load() < 0 || detKeyConfidence.load() < 0.6f || detKeySeconds.load() < 8.0f) return;
+    if ((int) p ("tuneKey") != detKey.load() || (int) p ("tuneScale") != detScale.load())
+        applyDetectedKey();
 }
 
 // ============================================================================

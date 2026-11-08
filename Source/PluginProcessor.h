@@ -6,7 +6,7 @@
 #include "Params.h"
 
 // Signal chain:  IN -> GATE -> AUTOTUNE + HARMONY -> [re-orderable FX chain] -> OUT
-class NeonRuinAudioProcessor : public juce::AudioProcessor
+class NeonRuinAudioProcessor : public juce::AudioProcessor, private juce::Timer
 {
 public:
     NeonRuinAudioProcessor();
@@ -51,6 +51,14 @@ public:
     void copyABToOther();
     int  getABSlot() const { return abSlot; }
 
+    // ------------------------------------------------------- key / tempo detection
+    void applyDetectedKey();                  // copy detected key + scale into the autotune
+    void resetKeyDetection()  { resetKeyRequest.store (true); }
+    void resetBpmDetection()  { resetBpmRequest.store (true); }
+    std::atomic<int>   detKey { -1 }, detScale { 1 }, detAltKey { -1 }, detAltScale { 1 };
+    std::atomic<float> detKeyConfidence { 0.0f }, detKeySeconds { 0.0f }, detBpm { 0.0f }, detBpmConfidence { 0.0f };
+    std::atomic<bool>  usingDetectedTempo { false };
+
     // ------------------------------------------------------------- chain order
     juce::Array<int> getChainOrder() const;
     void setChainOrder (const juce::Array<int>& order);
@@ -64,6 +72,12 @@ public:
     std::atomic<int>   midiNotesHeld { 0 };
 
 private:
+    void timerCallback() override;            // message thread: Auto Key
+    std::atomic<bool> resetKeyRequest { false }, resetBpmRequest { false };
+    analysis::BpmDetector bpmDetector;
+    std::array<float, 512> monoScratch {};
+    int keyAnalysisCounter = 0;
+
     float p (const char* id) const { return apvts.getRawParameterValue (id)->load(); }
     bool  on (const char* id) const { return p (id) > 0.5f; }
     float pm (const char* id) const;                // modulated value (LFOs + Chaos)

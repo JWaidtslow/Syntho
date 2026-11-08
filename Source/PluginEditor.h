@@ -124,6 +124,16 @@ private:
     std::array<float, 120> values; int write = 0;
 };
 
+// Read-out of the key/scale and tempo detectors
+class DetectView : public juce::Component
+{
+public:
+    explicit DetectView (NeonRuinAudioProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+private:
+    NeonRuinAudioProcessor& proc;
+};
+
 // Drag-and-drop view of the effect chain order
 class ChainView : public juce::Component
 {
@@ -186,12 +196,14 @@ private:
     juce::OwnedArray<juce::Component> owned;
     // named parts for layout
     struct Parts { ModulePanel* panel = nullptr; std::vector<NeonKnob*> knobs; std::vector<NeonCombo*> combos; std::vector<NeonToggle*> toggles; };
-    Parts tune, harm, gateP, eq, comp, deess, trans, dbl, delayP, reverbP, chorusP, glitchP, lfo1, lfo2, routing, macro;
+    Parts tune, harm, gateP, detect, eq, comp, deess, trans, dbl, delayP, reverbP, chorusP, glitchP, lfo1, lfo2, routing, macro;
     PitchDisplay* pitchDisplay = nullptr;
     GRMeter* compMeter = nullptr;
     GRMeter* deessMeter = nullptr;
     LfoScope* scopes[2] {};
     ChainView* chainView = nullptr;
+    DetectView* detectView = nullptr;
+    juce::TextButton applyKeyBtn { "APPLY" }, resetKeyBtn { "RESET" }, resetBpmBtn { "RESET" };
     std::unique_ptr<NeonKnob> bigChaos;
     juce::Label chaosInfo;
 

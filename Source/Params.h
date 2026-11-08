@@ -102,6 +102,9 @@ namespace params
         fl ("outGain", "Output", -24.0f, 24.0f, 0.0f, 1.0f, "dB");
         fl ("chaos",   "Chaos",    0.0f, 100.0f, 0.0f, 1.0f, "%");
 
+        ch ("tempoSource", "Tempo Source", juce::StringArray { "Host", "Detected", "Detected x1/2", "Detected x2" }, 0);
+        sw ("keyAuto", "Auto Key", false);
+
         sw ("gateOn", "Gate On", false);
         fl ("gateThresh",  "Gate Threshold", -80.0f, -20.0f, -50.0f, 1.0f, "dB");
         fl ("gateRelease", "Gate Release",    10.0f, 500.0f, 120.0f, 0.5f, "ms");

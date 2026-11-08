@@ -154,7 +154,7 @@ int main (int argc, char** argv)
     proc.prepareToPlay (sr, 512);
     if (vocal.getNumSamples() > 0)
     {
-        juce::AudioBuffer<float> b (2, (int) (sr * 3.6));
+        juce::AudioBuffer<float> b (2, juce::jmin (vocal.getNumSamples(), (int) (sr * 12.0)));
         for (int c = 0; c < 2; ++c) b.copyFrom (c, 0, vocal, c, 0, b.getNumSamples());
         run (proc, b);
     }

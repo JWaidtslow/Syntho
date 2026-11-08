@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_dsp/juce_dsp.h>
+#include "Analyzer.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -199,6 +200,9 @@ public:
     static constexpr int historySize = 256;
     std::array<std::atomic<float>, historySize> histIn {}, histOut {}, histTarget {};   // MIDI notes, <0 = silence
     std::atomic<int> histWrite { 0 };
+
+    // key / scale detection (fed with every sung note; read by the processor)
+    analysis::KeyDetector keyDetector;
 
     // diagnostics (used by the test tool)
     juce::int64 lateSamples = 0;
@@ -444,6 +448,8 @@ private:
         centre1 = inst + (centre1 - inst) * a;
         centre2 = centre1 + (centre2 - centre1) * a;
         const float centre = centre2;
+        // key detection listens to the (vibrato-free) note centre, once a note has settled
+        if (centreAge > 0.08f) keyDetector.add (centre, hopSec);
 
         // target note: hysteresis + must persist ~12 ms before switching
         const bool useMidi = set.midiTarget && numHeld > 0;

@@ -454,6 +454,68 @@ void LfoScope::paint (Graphics& g)
 }
 
 // ============================================================================
+//  Detect view: key / scale and tempo read-outs
+// ============================================================================
+void DetectView::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    auto left = r.removeFromLeft (r.getWidth() * 0.55f).reduced (4.0f, 0.0f);
+    auto right = r.reduced (4.0f, 0.0f);
+    const auto keys = PitchCorrector::keyNames();
+    const auto scales = PitchCorrector::scaleNames();
+
+    auto confBar = [&] (Rectangle<float> b, float conf, Colour c)
+    {
+        g.setColour (neon::bg0.withAlpha (0.9f)); g.fillRect (b);
+        g.setColour (c.withAlpha (0.4f)); g.drawRect (b, 1.0f);
+        g.setColour (conf > 0.6f ? c : (conf > 0.35f ? neon::amber : neon::magenta));
+        g.fillRect (b.reduced (2.0f).withWidth ((b.getWidth() - 4.0f) * jlimit (0.0f, 1.0f, conf)));
+    };
+
+    // ---- key / scale
+    g.setFont (neon::mono (10.0f, true));
+    g.setColour (neon::text.withAlpha (0.75f));
+    g.drawText ("DETECTED KEY", left.removeFromTop (14.0f), Justification::left);
+    const int k = proc.detKey.load();
+    const float secs = proc.detKeySeconds.load(), conf = proc.detKeyConfidence.load();
+    if (k >= 0)
+    {
+        glowText (g, keys[k] + " " + scales[proc.detScale.load()].toUpperCase(), left.removeFromTop (34.0f), Justification::left,
+                  neon::mono (22.0f, true), neon::green, 1.0f);
+        confBar (left.removeFromTop (10.0f), conf, neon::green);
+        left.removeFromTop (4.0f);
+        g.setFont (neon::mono (10.0f));
+        g.setColour (neon::text.withAlpha (0.6f));
+        const int ak = proc.detAltKey.load();
+        g.drawText ("conf " + String ((int) std::round (conf * 100)) + "%   alt: " + (ak >= 0 ? keys[ak] + " " + scales[proc.detAltScale.load()] : String ("-")),
+                    left.removeFromTop (13.0f), Justification::left);
+        g.drawText ("heard " + String (secs, 1) + " s of singing", left.removeFromTop (13.0f), Justification::left);
+    }
+    else
+    {
+        glowText (g, "LISTENING...", left.removeFromTop (34.0f), Justification::left, neon::mono (18.0f, true), neon::dim.brighter (0.5f), 0.4f);
+        g.setFont (neon::mono (10.0f));
+        g.setColour (neon::text.withAlpha (0.6f));
+        g.drawText ("sing ~3 s to detect (" + String (secs, 1) + " s so far)", left.removeFromTop (13.0f), Justification::left);
+    }
+
+    // ---- tempo
+    g.setFont (neon::mono (10.0f, true));
+    g.setColour (neon::text.withAlpha (0.75f));
+    g.drawText ("DETECTED TEMPO", right.removeFromTop (14.0f), Justification::left);
+    const float bpm = proc.detBpm.load(), bconf = proc.detBpmConfidence.load();
+    glowText (g, bpm > 0 ? String (bpm, 1) : String ("---"), right.removeFromTop (34.0f), Justification::left, neon::mono (22.0f, true),
+              bpm > 0 ? neon::amber : neon::dim, bpm > 0 ? 1.0f : 0.3f);
+    confBar (right.removeFromTop (10.0f), bconf, neon::amber);
+    right.removeFromTop (4.0f);
+    g.setFont (neon::mono (10.0f));
+    g.setColour (neon::text.withAlpha (0.6f));
+    g.drawText ("conf " + String ((int) std::round (bconf * 100)) + "%   BPM", right.removeFromTop (13.0f), Justification::left);
+    g.drawText ((proc.usingDetectedTempo.load() ? "using: detected " : "using: host ") + String (proc.bpm.load(), 1),
+                right.removeFromTop (13.0f), Justification::left);
+}
+
+// ============================================================================
 //  Chain view: drag modules to reorder the effect chain
 // ============================================================================
 static const char* modulePower[] = { "eqOn", "compOn", "deessOn", "tmOn", "dblOn", "chorusOn", "delayOn", "reverbOn", "glitchOn" };
@@ -657,6 +719,19 @@ NeonRuinAudioProcessorEditor::NeonRuinAudioProcessorEditor (NeonRuinAudioProcess
                    knob (harm.panel, "harmFormant", "Formant", "Voice character of the extra voices (e.g. + for female, - for male)"),
                    knob (harm.panel, "harmSub", "Sub Oct", "Octave-down layer"),
                    knob (harm.panel, "harmUp", "Oct Up", "Octave-up layer") };
+
+    detect.panel = panel (0, {}, "SYS // LISTEN", "DETECT", neon::green,
+                          "Listens to the vocal and detects key, scale and tempo");
+    detectView = new DetectView (proc); owned.add (detectView); detect.panel->addAndMakeVisible (detectView);
+    detect.toggles = { toggle (detect.panel, "keyAuto", "AUTO", "Automatically set the autotune key/scale when the detection is confident") };
+    detect.combos = { combo (detect.panel, "tempoSource", "Tempo", "Which tempo the synced delay, glitch and LFOs follow: the DAW (host) or the detected tempo (with x1/2 and x2 to fix half/double-tempo mistakes)") };
+    for (auto* b : { &applyKeyBtn, &resetKeyBtn, &resetBpmBtn }) { b->setColour (TextButton::buttonColourId, neon::green); detect.panel->addAndMakeVisible (b); }
+    applyKeyBtn.setTooltip ("Use the detected key and scale in the autotune");
+    resetKeyBtn.setTooltip ("Forget what was heard and start detecting the key again");
+    resetBpmBtn.setTooltip ("Start detecting the tempo again");
+    applyKeyBtn.onClick = [this] { proc.applyDetectedKey(); };
+    resetKeyBtn.onClick = [this] { proc.resetKeyDetection(); };
+    resetBpmBtn.onClick = [this] { proc.resetBpmDetection(); };
 
     gateP.panel = panel (0, "gateOn", "MOD-00 // CLEAN", "GATE", neon::green, "Silences background noise between phrases");
     gateP.knobs = { knob (gateP.panel, "gateThresh", "Thresh", "Below this level the gate closes"),
@@ -908,7 +983,20 @@ void NeonRuinAudioProcessorEditor::resized()
         tune.toggles[0]->setBounds (col.removeFromTop (28));
         gridOfKnobs (tune.knobs, c, 4);
     }
-    split (row2, { 0.76f }, { harm.panel, gateP.panel });
+    split (row2, { 0.52f, 0.31f }, { harm.panel, detect.panel, gateP.panel });
+    {
+        auto c = detect.panel->getContentArea();
+        auto bottom = c.removeFromBottom (44);
+        detectView->setBounds (c);
+        const int half = (int) (bottom.getWidth() * 0.55f);
+        auto l = bottom.removeFromLeft (half).withTrimmedTop (16).withTrimmedRight (8);
+        applyKeyBtn.setBounds (l.removeFromLeft (62)); l.removeFromLeft (4);
+        resetKeyBtn.setBounds (l.removeFromLeft (56)); l.removeFromLeft (4);
+        detect.toggles[0]->setBounds (l);
+        auto rgt = bottom;
+        resetBpmBtn.setBounds (rgt.removeFromRight (56).withTrimmedTop (16)); rgt.removeFromRight (4);
+        detect.combos[0]->setBounds (rgt);
+    }
     {
         auto c = harm.panel->getContentArea();
         auto col = column (c, 120, 14);
@@ -1106,7 +1194,7 @@ void NeonRuinAudioProcessorEditor::paint (Graphics& g)
         const int held = proc.midiNotesHeld.load();
         const bool glitchOn = proc.apvts.getRawParameterValue ("glitchOn")->load() > 0.5f;
         g.setColour (neon::text.withAlpha (0.7f));
-        g.drawText (String (proc.bpm.load(), 1) + " BPM", status.removeFromRight (90.0f), Justification::right);
+        g.drawText ((proc.usingDetectedTempo.load() ? "DET " : "") + String (proc.bpm.load(), 1) + " BPM", status.removeFromRight (110.0f), Justification::right);
         auto led = [&] (const String& label, bool lit, Colour c)
         {
             auto r = status.removeFromRight (110.0f);
@@ -1179,7 +1267,7 @@ void NeonRuinAudioProcessorEditor::timerCallback()
     repaint (footerArea.toNearestInt());
     switch (currentPage)
     {
-        case 0: pitchDisplay->frame = frameCount; pitchDisplay->repaint(); break;
+        case 0: pitchDisplay->frame = frameCount; pitchDisplay->repaint(); if (frameCount % 6 == 0) detectView->repaint(); break;
         case 1: compMeter->tick(); deessMeter->tick(); break;
         case 3: scopes[0]->tick(); scopes[1]->tick(); chainView->repaint(); break;
         default: break;
